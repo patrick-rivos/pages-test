@@ -13,7 +13,7 @@ title: Apply Patch Status 25734-RISCV_Refactor_and_cleanup_vsetvl_pass-1
 > git am ../patches/*.patch --whitespace=fix -q --3way
 ```
 ## Output
-```
+```json
 error: patch failed: gcc/testsuite/gcc.target/riscv/rvv/vsetvl/avl_single-21.c:20
 error: gcc/testsuite/gcc.target/riscv/rvv/vsetvl/avl_single-21.c: patch does not apply
 error: patch failed: gcc/testsuite/gcc.target/riscv/rvv/vsetvl/avl_single-23.c:7
@@ -1589,4 +1589,5 @@ index 4b06d93e7f9..f636b8e68e3 100644
 -			      GE_SEW1, TAIL_POLICTY1, MASK_POLICY1, AVL2,      \
 -			      SEW2, LMUL2, RATIO2, NONZERO_AVL2, GE_SEW2,      \
 -			      TAIL_POLICTY2, MASK_POLICY2, COND)               \
-{
+{{{
+```
