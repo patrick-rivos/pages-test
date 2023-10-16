@@ -1569,3 +1569,49 @@ index 4b06d93e7f9..f636b8e68e3 100644
 -      gcc_unreachable ();
 -    }
 -}
+-
+-static bool
+-second_lmul_less_than_first_lmul_p (const vector_insn_info &info1,
+-				    const vector_insn_info &info2)
+-{
+-  return compare_lmul (info2.get_vlmul (), info1.get_vlmul ()) == -1;
+-}
+-
+-static bool
+-second_ratio_less_than_first_ratio_p (const vector_insn_info &info1,
+-				      const vector_insn_info &info2)
+-{
+-  return info2.get_ratio () < info1.get_ratio ();
+-}
+-
+-static CONSTEXPR const demands_cond incompatible_conds[] = {
+-#define DEF_INCOMPATIBLE_COND(AVL1, SEW1, LMUL1, RATIO1, NONZERO_AVL1,         \
+-			      GE_SEW1, TAIL_POLICTY1, MASK_POLICY1, AVL2,      \
+-			      SEW2, LMUL2, RATIO2, NONZERO_AVL2, GE_SEW2,      \
+-			      TAIL_POLICTY2, MASK_POLICY2, COND)               \
+-  {{{AVL1, SEW1, LMUL1, RATIO1, NONZERO_AVL1, GE_SEW1, TAIL_POLICTY1,          \
+-     MASK_POLICY1},                                                            \
+-    {AVL2, SEW2, LMUL2, RATIO2, NONZERO_AVL2, GE_SEW2, TAIL_POLICTY2,          \
+-     MASK_POLICY2}},                                                           \
+-   COND},
+-#include "riscv-vsetvl.def"
+-};
+-
+-static unsigned
+-greatest_sew (const vector_insn_info &info1, const vector_insn_info &info2)
+-{
+-  return std::max (info1.get_sew (), info2.get_sew ());
+-}
+-
+-static unsigned
+-first_sew (const vector_insn_info &info1, const vector_insn_info &)
+-{
+-  return info1.get_sew ();
+-}
+-
+-static unsigned
+-second_sew (const vector_insn_info &, const vector_insn_info &info2)
+-{
+-  return info2.get_sew ();
+-}
+-
