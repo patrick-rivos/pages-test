@@ -1522,3 +1522,50 @@ index 4b06d93e7f9..f636b8e68e3 100644
 -  return info1.get_sew () < info2.get_sew ()
 -	 || !float_insn_valid_sew_p (info2, info1.get_sew ());
 -}
+-
+-/* return 0 if LMUL1 == LMUL2.
+-   return -1 if LMUL1 < LMUL2.
+-   return 1 if LMUL1 > LMUL2.  */
+-static int
+-compare_lmul (vlmul_type vlmul1, vlmul_type vlmul2)
+-{
+-  if (vlmul1 == vlmul2)
+-    return 0;
+-
+-  switch (vlmul1)
+-    {
+-    case LMUL_1:
+-      if (vlmul2 == LMUL_2 || vlmul2 == LMUL_4 || vlmul2 == LMUL_8)
+-	return 1;
+-      else
+-	return -1;
+-    case LMUL_2:
+-      if (vlmul2 == LMUL_4 || vlmul2 == LMUL_8)
+-	return 1;
+-      else
+-	return -1;
+-    case LMUL_4:
+-      if (vlmul2 == LMUL_8)
+-	return 1;
+-      else
+-	return -1;
+-    case LMUL_8:
+-      return -1;
+-    case LMUL_F2:
+-      if (vlmul2 == LMUL_1 || vlmul2 == LMUL_2 || vlmul2 == LMUL_4
+-	  || vlmul2 == LMUL_8)
+-	return 1;
+-      else
+-	return -1;
+-    case LMUL_F4:
+-      if (vlmul2 == LMUL_F2 || vlmul2 == LMUL_1 || vlmul2 == LMUL_2
+-	  || vlmul2 == LMUL_4 || vlmul2 == LMUL_8)
+-	return 1;
+-      else
+-	return -1;
+-    case LMUL_F8:
+-      return 0;
+-    default:
+-      gcc_unreachable ();
+-    }
+-}
