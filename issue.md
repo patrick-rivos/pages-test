@@ -613,3 +613,634 @@ index 4b06d93e7f9..f636b8e68e3 100644
 -    }
 -  return true;
 -}
+-
+-static bool
+-insn_should_be_added_p (const insn_info *insn, unsigned int types)
+-{
+-  if (insn->is_real () && (types & REAL_SET))
+-    return true;
+-  if (insn->is_phi () && (types & PHI_SET))
+-    return true;
+-  if (insn->is_bb_head () && (types & BB_HEAD_SET))
+-    return true;
+-  if (insn->is_bb_end () && (types & BB_END_SET))
+-    return true;
+-  return false;
+-}
+-
+-/* Recursively find all define instructions. The kind of instruction is
+-   specified by the DEF_TYPE.  */
+-static hash_set<set_info *>
+-get_all_sets (phi_info *phi, unsigned int types)
+-{
+-  hash_set<set_info *> insns;
+-  auto_vec<phi_info *> work_list;
+-  hash_set<phi_info *> visited_list;
+-  if (!phi)
+-    return hash_set<set_info *> ();
+-  work_list.safe_push (phi);
+-
+-  while (!work_list.is_empty ())
+-    {
+-      phi_info *phi = work_list.pop ();
+-      visited_list.add (phi);
+-      for (use_info *use : phi->inputs ())
+-	{
+-	  def_info *def = use->def ();
+-	  set_info *set = safe_dyn_cast<set_info *> (def);
+-	  if (!set)
+-	    return hash_set<set_info *> ();
+-
+-	  gcc_assert (!set->insn ()->is_debug_insn ());
+-
+-	  if (insn_should_be_added_p (set->insn (), types))
+-	    insns.add (set);
+-	  if (set->insn ()->is_phi ())
+-	    {
+-	      phi_info *new_phi = as_a<phi_info *> (set);
+-	      if (!visited_list.contains (new_phi))
+-		work_list.safe_push (new_phi);
+-	    }
+-	}
+-    }
+-  return insns;
+-}
+-
+-static hash_set<set_info *>
+-get_all_sets (set_info *set, bool /* get_real_inst */ real_p,
+-	      bool /*get_phi*/ phi_p, bool /* get_function_parameter*/ param_p)
+-{
+-  if (real_p && phi_p && param_p)
+-    return get_all_sets (safe_dyn_cast<phi_info *> (set),
+-			 REAL_SET | PHI_SET | BB_HEAD_SET | BB_END_SET);
+-
+-  else if (real_p && param_p)
+-    return get_all_sets (safe_dyn_cast<phi_info *> (set),
+-			 REAL_SET | BB_HEAD_SET | BB_END_SET);
+-
+-  else if (real_p)
+-    return get_all_sets (safe_dyn_cast<phi_info *> (set), REAL_SET);
+-  return hash_set<set_info *> ();
+-}
+-
+ /* Helper function to get AVL operand.  */
+ static rtx
+ get_avl (rtx_insn *rinsn)
+@@ -511,15 +371,6 @@ get_avl (rtx_insn *rinsn)
+   return recog_data.operand[get_attr_vl_op_idx (rinsn)];
+ }
+
+-static set_info *
+-get_same_bb_set (hash_set<set_info *> &sets, const basic_block cfg_bb)
+-{
+-  for (set_info *set : sets)
+-    if (set->bb ()->cfg_bb () == cfg_bb)
+-      return set;
+-  return nullptr;
+-}
+-
+ /* Helper function to get SEW operand. We always have SEW value for
+    all RVV instructions that have VTYPE OP.  */
+ static uint8_t
+@@ -589,365 +440,186 @@ has_vector_insn (function *fn)
+   return false;
+ }
+
+-/* Emit vsetvl instruction.  */
+-static rtx
+-gen_vsetvl_pat (enum vsetvl_type insn_type, const vl_vtype_info &info, rtx vl)
++static vlmul_type
++calculate_vlmul (unsigned int sew, unsigned int ratio)
+ {
+-  rtx avl = info.get_avl ();
+-  /* if optimization == 0 and the instruction is vmv.x.s/vfmv.f.s,
+-     set the value of avl to (const_int 0) so that VSETVL PASS will
+-     insert vsetvl correctly.*/
+-  if (info.has_avl_no_reg ())
+-    avl = GEN_INT (0);
+-  rtx sew = gen_int_mode (info.get_sew (), Pmode);
+-  rtx vlmul = gen_int_mode (info.get_vlmul (), Pmode);
+-  rtx ta = gen_int_mode (info.get_ta (), Pmode);
+-  rtx ma = gen_int_mode (info.get_ma (), Pmode);
+-
+-  if (insn_type == VSETVL_NORMAL)
+-    {
+-      gcc_assert (vl != NULL_RTX);
+-      return gen_vsetvl (Pmode, vl, avl, sew, vlmul, ta, ma);
+-    }
+-  else if (insn_type == VSETVL_VTYPE_CHANGE_ONLY)
+-    return gen_vsetvl_vtype_change_only (sew, vlmul, ta, ma);
+-  else
+-    return gen_vsetvl_discard_result (Pmode, avl, sew, vlmul, ta, ma);
++  const vlmul_type ALL_LMUL[]
++    = {LMUL_1, LMUL_2, LMUL_4, LMUL_8, LMUL_F8, LMUL_F4, LMUL_F2};
++  for (const vlmul_type vlmul : ALL_LMUL)
++    if (calculate_ratio (sew, vlmul) == ratio)
++      return vlmul;
++  return LMUL_RESERVED;
+ }
+
+-static rtx
+-gen_vsetvl_pat (rtx_insn *rinsn, const vector_insn_info &info,
+-		rtx vl = NULL_RTX)
++/* Get the currently supported maximum sew used in the int rvv instructions. */
++static uint8_t
++get_max_int_sew ()
+ {
+-  rtx new_pat;
+-  vl_vtype_info new_info = info;
+-  if (info.get_insn () && info.get_insn ()->rtl ()
+-      && fault_first_load_p (info.get_insn ()->rtl ()))
+-    new_info.set_avl_info (
+-      avl_info (get_avl (info.get_insn ()->rtl ()), nullptr));
+-  if (vl)
+-    new_pat = gen_vsetvl_pat (VSETVL_NORMAL, new_info, vl);
+-  else
+-    {
+-      if (vsetvl_insn_p (rinsn))
+-	new_pat = gen_vsetvl_pat (VSETVL_NORMAL, new_info, get_vl (rinsn));
+-      else if (INSN_CODE (rinsn) == CODE_FOR_vsetvl_vtype_change_only)
+-	new_pat = gen_vsetvl_pat (VSETVL_VTYPE_CHANGE_ONLY, new_info, NULL_RTX);
+-      else
+-	new_pat = gen_vsetvl_pat (VSETVL_DISCARD_RESULT, new_info, NULL_RTX);
+-    }
+-  return new_pat;
++  if (TARGET_VECTOR_ELEN_64)
++    return 64;
++  else if (TARGET_VECTOR_ELEN_32)
++    return 32;
++  gcc_unreachable ();
+ }
+
+-static void
+-emit_vsetvl_insn (enum vsetvl_type insn_type, enum emit_type emit_type,
+-		  const vl_vtype_info &info, rtx vl, rtx_insn *rinsn)
+-{
+-  rtx pat = gen_vsetvl_pat (insn_type, info, vl);
+-  if (dump_file)
+-    {
+-      fprintf (dump_file, "\nInsert vsetvl insn PATTERN:\n");
+-      print_rtl_single (dump_file, pat);
+-      fprintf (dump_file, "\nfor insn:\n");
+-      print_rtl_single (dump_file, rinsn);
+-    }
+-
+-  if (emit_type == EMIT_DIRECT)
+-    emit_insn (pat);
+-  else if (emit_type == EMIT_BEFORE)
+-    emit_insn_before (pat, rinsn);
+-  else
+-    emit_insn_after (pat, rinsn);
++/* Get the currently supported maximum sew used in the float rvv instructions.
++ */
++static uint8_t
++get_max_float_sew ()
++{
++  if (TARGET_VECTOR_ELEN_FP_64)
++    return 64;
++  else if (TARGET_VECTOR_ELEN_FP_32)
++    return 32;
++  else if (TARGET_VECTOR_ELEN_FP_16)
++    return 16;
++  gcc_unreachable ();
+ }
+
+-static void
+-eliminate_insn (rtx_insn *rinsn)
++/* Helper function to get VL operand.  */
++static rtx
++get_vl2 (rtx_insn *rinsn)
+ {
+-  if (dump_file)
++  if (has_vl_op (rinsn))
+     {
+-      fprintf (dump_file, "\nEliminate insn %d:\n", INSN_UID (rinsn));
+-      print_rtl_single (dump_file, rinsn);
++      extract_insn_cached (rinsn);
++      return recog_data.operand[get_attr_vl_op_idx (rinsn)];
+     }
+-  if (in_sequence_p ())
+-    remove_insn (rinsn);
+-  else
+-    delete_insn (rinsn);
++  return SET_DEST (XVECEXP (PATTERN (rinsn), 0, 0));
+ }
+
+-static vsetvl_type
+-insert_vsetvl (enum emit_type emit_type, rtx_insn *rinsn,
+-	       const vector_insn_info &info, const vector_insn_info &prev_info)
++/* Count the number of REGNO in RINSN.  */
++static int
++count_regno_occurrences (rtx_insn *rinsn, unsigned int regno)
+ {
+-  /* Use X0, X0 form if the AVL is the same and the SEW+LMUL gives the same
+-     VLMAX.  */
+-  if (prev_info.valid_or_dirty_p () && !prev_info.unknown_p ()
+-      && info.compatible_avl_p (prev_info) && info.same_vlmax_p (prev_info))
+-    {
+-      emit_vsetvl_insn (VSETVL_VTYPE_CHANGE_ONLY, emit_type, info, NULL_RTX,
+-			rinsn);
+-      return VSETVL_VTYPE_CHANGE_ONLY;
+-    }
+-
+-  if (info.has_avl_imm ())
+-    {
+-      emit_vsetvl_insn (VSETVL_DISCARD_RESULT, emit_type, info, NULL_RTX,
+-			rinsn);
+-      return VSETVL_DISCARD_RESULT;
+-    }
+-
+-  if (info.has_avl_no_reg ())
+-    {
+-      /* We can only use x0, x0 if there's no chance of the vtype change causing
+-	 the previous vl to become invalid.  */
+-      if (prev_info.valid_or_dirty_p () && !prev_info.unknown_p ()
+-	  && info.same_vlmax_p (prev_info))
+-	{
+-	  emit_vsetvl_insn (VSETVL_VTYPE_CHANGE_ONLY, emit_type, info, NULL_RTX,
+-			    rinsn);
+-	  return VSETVL_VTYPE_CHANGE_ONLY;
+-	}
+-      /* Otherwise use an AVL of 0 to avoid depending on previous vl.  */
+-      vl_vtype_info new_info = info;
+-      new_info.set_avl_info (avl_info (const0_rtx, nullptr));
+-      emit_vsetvl_insn (VSETVL_DISCARD_RESULT, emit_type, new_info, NULL_RTX,
+-			rinsn);
+-      return VSETVL_DISCARD_RESULT;
+-    }
+-
+-  /* Use X0 as the DestReg unless AVLReg is X0. We also need to change the
+-     opcode if the AVLReg is X0 as they have different register classes for
+-     the AVL operand.  */
+-  if (vlmax_avl_p (info.get_avl ()))
+-    {
+-      gcc_assert (has_vtype_op (rinsn) || vsetvl_insn_p (rinsn));
+-      /* For user vsetvli a5, zero, we should use get_vl to get the VL
+-	 operand "a5".  */
+-      rtx vl_op = info.get_avl_or_vl_reg ();
+-      gcc_assert (!vlmax_avl_p (vl_op));
+-      emit_vsetvl_insn (VSETVL_NORMAL, emit_type, info, vl_op, rinsn);
+-      return VSETVL_NORMAL;
+-    }
+-
+-  emit_vsetvl_insn (VSETVL_DISCARD_RESULT, emit_type, info, NULL_RTX, rinsn);
+-
+-  if (dump_file)
+-    {
+-      fprintf (dump_file, "Update VL/VTYPE info, previous info=");
+-      prev_info.dump (dump_file);
+-    }
+-  return VSETVL_DISCARD_RESULT;
++  int count = 0;
++  extract_insn (rinsn);
++  for (int i = 0; i < recog_data.n_operands; i++)
++    if (refers_to_regno_p (regno, recog_data.operand[i]))
++      count++;
++  return count;
+ }
+
+-/* Get VL/VTYPE information for INSN.  */
+-static vl_vtype_info
+-get_vl_vtype_info (const insn_info *insn)
++enum def_type
+ {
+-  set_info *set = nullptr;
+-  rtx avl = ::get_avl (insn->rtl ());
+-  if (avl && REG_P (avl))
+-    {
+-      if (vlmax_avl_p (avl) && has_vl_op (insn->rtl ()))
+-	set
+-	  = find_access (insn->uses (), REGNO (get_vl (insn->rtl ())))->def ();
+-      else if (!vlmax_avl_p (avl))
+-	set = find_access (insn->uses (), REGNO (avl))->def ();
+-      else
+-	set = nullptr;
+-    }
+-
+-  uint8_t sew = get_sew (insn->rtl ());
+-  enum vlmul_type vlmul = get_vlmul (insn->rtl ());
+-  uint8_t ratio = get_attr_ratio (insn->rtl ());
+-  /* when get_attr_ratio is invalid, this kind of instructions
+-     doesn't care about ratio. However, we still need this value
+-     in demand info backward analysis.  */
+-  if (ratio == INVALID_ATTRIBUTE)
+-    ratio = calculate_ratio (sew, vlmul);
+-  bool ta = tail_agnostic_p (insn->rtl ());
+-  bool ma = mask_agnostic_p (insn->rtl ());
+-
+-  /* If merge operand is undef value, we prefer agnostic.  */
+-  int merge_op_idx = get_attr_merge_op_idx (insn->rtl ());
+-  if (merge_op_idx != INVALID_ATTRIBUTE
+-      && satisfies_constraint_vu (recog_data.operand[merge_op_idx]))
+-    {
+-      ta = true;
+-      ma = true;
+-    }
+-
+-  vl_vtype_info info (avl_info (avl, set), sew, vlmul, ratio, ta, ma);
+-  return info;
+-}
++  REAL_SET = 1 << 0,
++  PHI_SET = 1 << 1,
++  BB_HEAD_SET = 1 << 2,
++  BB_END_SET = 1 << 3,
++  /* ??? TODO: In RTL_SSA framework, we have REAL_SET,
++     PHI_SET, BB_HEAD_SET, BB_END_SET and
++     CLOBBER_DEF def_info types. Currently,
++     we conservatively do not optimize clobber
++     def since we don't see the case that we
++     need to optimize it.  */
++  CLOBBER_DEF = 1 << 4
++};
+
+-/* Change insn and Assert the change always happens.  */
+-static void
+-validate_change_or_fail (rtx object, rtx *loc, rtx new_rtx, bool in_group)
++static bool
++insn_should_be_added_p (const insn_info *insn, unsigned int types)
+ {
+-  bool change_p = validate_change (object, loc, new_rtx, in_group);
+-  gcc_assert (change_p);
++  if (insn->is_real () && (types & REAL_SET))
++    return true;
++  if (insn->is_phi () && (types & PHI_SET))
++    return true;
++  if (insn->is_bb_head () && (types & BB_HEAD_SET))
++    return true;
++  if (insn->is_bb_end () && (types & BB_END_SET))
++    return true;
++  return false;
+ }
+
+-static void
+-change_insn (rtx_insn *rinsn, rtx new_pat)
++static const hash_set<use_info *>
++get_all_real_uses (insn_info *insn, unsigned regno)
+ {
+-  /* We don't apply change on RTL_SSA here since it's possible a
+-     new INSN we add in the PASS before which doesn't have RTL_SSA
+-     info yet.*/
+-  if (dump_file)
+-    {
+-      fprintf (dump_file, "\nChange PATTERN of insn %d from:\n",
+-	       INSN_UID (rinsn));
+-      print_rtl_single (dump_file, PATTERN (rinsn));
+-    }
++  gcc_assert (insn->is_real ());
+
+-  validate_change_or_fail (rinsn, &PATTERN (rinsn), new_pat, false);
++  hash_set<use_info *> uses;
++  auto_vec<phi_info *> work_list;
++  hash_set<phi_info *> visited_list;
+
+-  if (dump_file)
++  for (def_info *def : insn->defs ())
+     {
+-      fprintf (dump_file, "\nto:\n");
+-      print_rtl_single (dump_file, PATTERN (rinsn));
++      if (!def->is_reg () || def->regno () != regno)
++	continue;
++      set_info *set = safe_dyn_cast<set_info *> (def);
++      if (!set)
++	continue;
++      for (use_info *use : set->nondebug_insn_uses ())
++	if (use->insn ()->is_real ())
++	  uses.add (use);
++      for (use_info *use : set->phi_uses ())
++	work_list.safe_push (use->phi ());
+     }
+-}
+
+-static const insn_info *
+-get_forward_read_vl_insn (const insn_info *insn)
+-{
+-  const bb_info *bb = insn->bb ();
+-  for (const insn_info *i = insn->next_nondebug_insn ();
+-       real_insn_and_same_bb_p (i, bb); i = i->next_nondebug_insn ())
++  while (!work_list.is_empty ())
+     {
+-      if (find_access (i->defs (), VL_REGNUM))
+-	return nullptr;
+-      if (read_vl_insn_p (i->rtl ()))
+-	return i;
+-    }
+-  return nullptr;
+-}
++      phi_info *phi = work_list.pop ();
++      visited_list.add (phi);
+
+-static const insn_info *
+-get_backward_fault_first_load_insn (const insn_info *insn)
+-{
+-  const bb_info *bb = insn->bb ();
+-  for (const insn_info *i = insn->prev_nondebug_insn ();
+-       real_insn_and_same_bb_p (i, bb); i = i->prev_nondebug_insn ())
+-    {
+-      if (fault_first_load_p (i->rtl ()))
+-	return i;
+-      if (find_access (i->defs (), VL_REGNUM))
+-	return nullptr;
++      for (use_info *use : phi->nondebug_insn_uses ())
++	if (use->insn ()->is_real ())
++	  uses.add (use);
++      for (use_info *use : phi->phi_uses ())
++	if (!visited_list.contains (use->phi ()))
++	  work_list.safe_push (use->phi ());
+     }
+-  return nullptr;
++  return uses;
+ }
+
+-static bool
+-change_insn (function_info *ssa, insn_change change, insn_info *insn,
+-	     rtx new_pat)
++/* Recursively find all define instructions. The kind of instruction is
++   specified by the DEF_TYPE.  */
++static hash_set<set_info *>
++get_all_sets (phi_info *phi, unsigned int types)
+ {
+-  rtx_insn *rinsn = insn->rtl ();
+-  auto attempt = ssa->new_change_attempt ();
+-  if (!restrict_movement (change))
+-    return false;
++  hash_set<set_info *> insns;
++  auto_vec<phi_info *> work_list;
++  hash_set<phi_info *> visited_list;
++  if (!phi)
++    return hash_set<set_info *> ();
++  work_list.safe_push (phi);
+
+-  if (dump_file)
++  while (!work_list.is_empty ())
+     {
+-      fprintf (dump_file, "\nChange PATTERN of insn %d from:\n",
+-	       INSN_UID (rinsn));
+-      print_rtl_single (dump_file, PATTERN (rinsn));
+-    }
+-
+-  insn_change_watermark watermark;
+-  validate_change_or_fail (rinsn, &PATTERN (rinsn), new_pat, true);
+-
+-  /* These routines report failures themselves.  */
+-  if (!recog (attempt, change) || !change_is_worthwhile (change, false))
+-    return false;
++      phi_info *phi = work_list.pop ();
++      visited_list.add (phi);
++      for (use_info *use : phi->inputs ())
++	{
++	  def_info *def = use->def ();
++	  set_info *set = safe_dyn_cast<set_info *> (def);
++	  if (!set)
++	    return hash_set<set_info *> ();
+
+-  /* Fix bug:
+-      (insn 12 34 13 2 (set (reg:RVVM4DI 120 v24 [orig:134 _1 ] [134])
+-	(if_then_else:RVVM4DI (unspec:RVVMF8BI [
+-		    (const_vector:RVVMF8BI repeat [
+-			    (const_int 1 [0x1])
+-			])
+-		    (const_int 0 [0])
+-		    (const_int 2 [0x2]) repeated x2
+-		    (const_int 0 [0])
+-		    (reg:SI 66 vl)
+-		    (reg:SI 67 vtype)
+-		] UNSPEC_VPREDICATE)
+-	    (plus:RVVM4DI (reg/v:RVVM4DI 104 v8 [orig:137 op1 ] [137])
+-		(sign_extend:RVVM4DI (vec_duplicate:RVVM4SI (reg:SI 15 a5
+-    [140])))) (unspec:RVVM4DI [ (const_int 0 [0]) ] UNSPEC_VUNDEF)))
+-    "rvv.c":8:12 2784 {pred_single_widen_addsvnx8di_scalar} (expr_list:REG_EQUIV
+-    (mem/c:RVVM4DI (reg:DI 10 a0 [142]) [1 <retval>+0 S[64, 64] A128])
+-	(expr_list:REG_EQUAL (if_then_else:RVVM4DI (unspec:RVVMF8BI [
+-			(const_vector:RVVMF8BI repeat [
+-				(const_int 1 [0x1])
+-			    ])
+-			(reg/v:DI 13 a3 [orig:139 vl ] [139])
+-			(const_int 2 [0x2]) repeated x2
+-			(const_int 0 [0])
+-			(reg:SI 66 vl)
+-			(reg:SI 67 vtype)
+-		    ] UNSPEC_VPREDICATE)
+-		(plus:RVVM4DI (reg/v:RVVM4DI 104 v8 [orig:137 op1 ] [137])
+-		    (const_vector:RVVM4DI repeat [
+-			    (const_int 2730 [0xaaa])
+-			]))
+-		(unspec:RVVM4DI [
+-			(const_int 0 [0])
+-		    ] UNSPEC_VUNDEF))
+-	    (nil))))
+-    Here we want to remove use "a3". However, the REG_EQUAL/REG_EQUIV note use
+-    "a3" which made us fail in change_insn.  We reference to the
+-    'aarch64-cc-fusion.cc' and add this method.  */
+-  remove_reg_equal_equiv_notes (rinsn);
+-  confirm_change_group ();
+-  ssa->change_insn (change);
++	  gcc_assert (!set->insn ()->is_debug_insn ());
+
+-  if (dump_file)
+-    {
+-      fprintf (dump_file, "\nto:\n");
+-      print_rtl_single (dump_file, PATTERN (rinsn));
++	  if (insn_should_be_added_p (set->insn (), types))
++	    insns.add (set);
++	  if (set->insn ()->is_phi ())
++	    {
++	      phi_info *new_phi = as_a<phi_info *> (set);
++	      if (!visited_list.contains (new_phi))
++		work_list.safe_push (new_phi);
++	    }
++	}
+     }
+-  return true;
++  return insns;
+ }
+
+-static void
+-change_vsetvl_insn (const insn_info *insn, const vector_insn_info &info,
+-		    rtx vl = NULL_RTX)
++static hash_set<set_info *>
++get_all_sets (set_info *set, bool /* get_real_inst */ real_p,
++	      bool /*get_phi*/ phi_p, bool /* get_function_parameter*/ param_p)
+ {
+-  rtx_insn *rinsn;
+-  if (vector_config_insn_p (insn->rtl ()))
+-    {
+-      rinsn = insn->rtl ();
+-      gcc_assert (vsetvl_insn_p (rinsn) && "Can't handle X0, rs1 vsetvli yet");
+-    }
+-  else
+-    {
+-      gcc_assert (has_vtype_op (insn->rtl ()));
+-      rinsn = PREV_INSN (insn->rtl ());
+-      gcc_assert (vector_config_insn_p (rinsn));
+-    }
+-  rtx new_pat = gen_vsetvl_pat (rinsn, info, vl);
+-  change_insn (rinsn, new_pat);
+-}
++  if (real_p && phi_p && param_p)
++    return get_all_sets (safe_dyn_cast<phi_info *> (set),
++			 REAL_SET | PHI_SET | BB_HEAD_SET | BB_END_SET);
+
+-static bool
+-avl_source_has_vsetvl_p (set_info *avl_source)
+-{
+-  if (!avl_source)
+-    return false;
+-  if (!avl_source->insn ())
+-    return false;
+-  if (avl_source->insn ()->is_real ())
+-    return vsetvl_insn_p (avl_source->insn ()->rtl ());
+-  hash_set<set_info *> sets = get_all_sets (avl_source, true, false, true);
+-  for (const auto set : sets)
+-    {
+-      if (set->insn ()->is_real () && vsetvl_insn_p (set->insn ()->rtl ()))
+-	return true;
+-    }
+-  return false;
++  else if (real_p && param_p)
++    return get_all_sets (safe_dyn_cast<phi_info *> (set),
++			 REAL_SET | BB_HEAD_SET | BB_END_SET);
++
++  else if (real_p)
++    return get_all_sets (safe_dyn_cast<phi_info *> (set), REAL_SET);
++  return hash_set<set_info *> ();
+ }
+
+ static bool
+@@ -959,93 +631,14 @@ source_equal_p (insn_info *insn1, insn_info *insn2)
+   rtx_insn *rinsn2 = insn2->rtl ();
+   if (!rinsn1 || !rinsn2)
+     return false;
++
+   rtx note1 = find_reg_equal_equiv_note (rinsn1);
+   rtx note2 = find_reg_equal_equiv_note (rinsn2);
+-  rtx single_set1 = single_set (rinsn1);
+-  rtx single_set2 = single_set (rinsn2);
+-  if (read_vl_insn_p (rinsn1) && read_vl_insn_p (rinsn2))
+-    {
+-      const insn_info *load1 = get_backward_fault_first_load_insn (insn1);
+-      const insn_info *load2 = get_backward_fault_first_load_insn (insn2);
+-      return load1 && load2 && load1 == load2;
+-    }
+-
+   if (note1 && note2 && rtx_equal_p (note1, note2))
+     return true;
+-
+-  /* Since vsetvl instruction is not single SET.
+-     We handle this case specially here.  */
+-  if (vsetvl_insn_p (insn1->rtl ()) && vsetvl_insn_p (insn2->rtl ()))
+-    {
+-      /* For example:
+-	   vsetvl1 a6,a5,e32m1
+-	   RVV 1 (use a6 as AVL)
+-	   vsetvl2 a5,a5,e8mf4
+-	   RVV 2 (use a5 as AVL)
+-	 We consider AVL of RVV 1 and RVV 2 are same so that we can
+-	 gain more optimization opportunities.
+-
+-	 Note: insn1_info.compatible_avl_p (insn2_info)
+-	 will make sure there is no instruction between vsetvl1 and vsetvl2
+-	 modify a5 since their def will be different if there is instruction
+-	 modify a5 and compatible_avl_p will return false.  */
+-      vector_insn_info insn1_info, insn2_info;
+-      insn1_info.parse_insn (insn1);
+-      insn2_info.parse_insn (insn2);
