@@ -1468,3 +1468,216 @@ index 4b06d93e7f9..f636b8e68e3 100644
 +  bool change_vtype_only;
 +  insn_info *m_read_vl_insn;
 +  bool use_by_non_rvv_insn;
+
+-static bool
+-possible_zero_avl_p (const vector_insn_info &info1,
+-		     const vector_insn_info &info2)
+-{
+-  return !info1.has_non_zero_avl () || !info2.has_non_zero_avl ();
+-}
+-
+-static bool
+-second_ratio_invalid_for_first_sew_p (const vector_insn_info &info1,
+-				      const vector_insn_info &info2)
+-{
+-  return calculate_vlmul (info1.get_sew (), info2.get_ratio ())
+-	 == LMUL_RESERVED;
+-}
+-
+-static bool
+-second_ratio_invalid_for_first_lmul_p (const vector_insn_info &info1,
+-				       const vector_insn_info &info2)
+-{
+-  return calculate_sew (info1.get_vlmul (), info2.get_ratio ()) == 0;
+-}
+-
+-static bool
+-float_insn_valid_sew_p (const vector_insn_info &info, unsigned int sew)
+-{
+-  if (info.get_insn () && info.get_insn ()->is_real ()
+-      && get_attr_type (info.get_insn ()->rtl ()) == TYPE_VFMOVFV)
+-    {
+-      if (sew == 16)
+-	return TARGET_VECTOR_ELEN_FP_16;
+-      else if (sew == 32)
+-	return TARGET_VECTOR_ELEN_FP_32;
+-      else if (sew == 64)
+-	return TARGET_VECTOR_ELEN_FP_64;
+-    }
+-  return true;
+-}
+-
+-static bool
+-second_sew_less_than_first_sew_p (const vector_insn_info &info1,
+-				  const vector_insn_info &info2)
+-{
+-  return info2.get_sew () < info1.get_sew ()
+-	 || !float_insn_valid_sew_p (info1, info2.get_sew ());
+-}
+-
+-static bool
+-first_sew_less_than_second_sew_p (const vector_insn_info &info1,
+-				  const vector_insn_info &info2)
+-{
+-  return info1.get_sew () < info2.get_sew ()
+-	 || !float_insn_valid_sew_p (info2, info1.get_sew ());
+-}
+-
+-/* return 0 if LMUL1 == LMUL2.
+-   return -1 if LMUL1 < LMUL2.
+-   return 1 if LMUL1 > LMUL2.  */
+-static int
+-compare_lmul (vlmul_type vlmul1, vlmul_type vlmul2)
+-{
+-  if (vlmul1 == vlmul2)
+-    return 0;
+-
+-  switch (vlmul1)
+-    {
+-    case LMUL_1:
+-      if (vlmul2 == LMUL_2 || vlmul2 == LMUL_4 || vlmul2 == LMUL_8)
+-	return 1;
+-      else
+-	return -1;
+-    case LMUL_2:
+-      if (vlmul2 == LMUL_4 || vlmul2 == LMUL_8)
+-	return 1;
+-      else
+-	return -1;
+-    case LMUL_4:
+-      if (vlmul2 == LMUL_8)
+-	return 1;
+-      else
+-	return -1;
+-    case LMUL_8:
+-      return -1;
+-    case LMUL_F2:
+-      if (vlmul2 == LMUL_1 || vlmul2 == LMUL_2 || vlmul2 == LMUL_4
+-	  || vlmul2 == LMUL_8)
+-	return 1;
+-      else
+-	return -1;
+-    case LMUL_F4:
+-      if (vlmul2 == LMUL_F2 || vlmul2 == LMUL_1 || vlmul2 == LMUL_2
+-	  || vlmul2 == LMUL_4 || vlmul2 == LMUL_8)
+-	return 1;
+-      else
+-	return -1;
+-    case LMUL_F8:
+-      return 0;
+-    default:
+-      gcc_unreachable ();
+-    }
+-}
+-
+-static bool
+-second_lmul_less_than_first_lmul_p (const vector_insn_info &info1,
+-				    const vector_insn_info &info2)
+-{
+-  return compare_lmul (info2.get_vlmul (), info1.get_vlmul ()) == -1;
+-}
+-
+-static bool
+-second_ratio_less_than_first_ratio_p (const vector_insn_info &info1,
+-				      const vector_insn_info &info2)
+-{
+-  return info2.get_ratio () < info1.get_ratio ();
+-}
+-
+-static CONSTEXPR const demands_cond incompatible_conds[] = {
+-#define DEF_INCOMPATIBLE_COND(AVL1, SEW1, LMUL1, RATIO1, NONZERO_AVL1,         \
+-			      GE_SEW1, TAIL_POLICTY1, MASK_POLICY1, AVL2,      \
+-			      SEW2, LMUL2, RATIO2, NONZERO_AVL2, GE_SEW2,      \
+-			      TAIL_POLICTY2, MASK_POLICY2, COND)               \
+-  {{{AVL1, SEW1, LMUL1, RATIO1, NONZERO_AVL1, GE_SEW1, TAIL_POLICTY1,          \
+-     MASK_POLICY1},                                                            \
+-    {AVL2, SEW2, LMUL2, RATIO2, NONZERO_AVL2, GE_SEW2, TAIL_POLICTY2,          \
+-     MASK_POLICY2}},                                                           \
+-   COND},
+-#include "riscv-vsetvl.def"
+-};
+-
+-static unsigned
+-greatest_sew (const vector_insn_info &info1, const vector_insn_info &info2)
+-{
+-  return std::max (info1.get_sew (), info2.get_sew ());
+-}
+-
+-static unsigned
+-first_sew (const vector_insn_info &info1, const vector_insn_info &)
+-{
+-  return info1.get_sew ();
+-}
+-
+-static unsigned
+-second_sew (const vector_insn_info &, const vector_insn_info &info2)
+-{
+-  return info2.get_sew ();
+-}
+-
+-static vlmul_type
+-first_vlmul (const vector_insn_info &info1, const vector_insn_info &)
+-{
+-  return info1.get_vlmul ();
+-}
+-
+-static vlmul_type
+-second_vlmul (const vector_insn_info &, const vector_insn_info &info2)
+-{
+-  return info2.get_vlmul ();
+-}
+-
+-static unsigned
+-first_ratio (const vector_insn_info &info1, const vector_insn_info &)
+-{
+-  return info1.get_ratio ();
+-}
+-
+-static unsigned
+-second_ratio (const vector_insn_info &, const vector_insn_info &info2)
+-{
+-  return info2.get_ratio ();
+-}
+-
+-static vlmul_type
+-vlmul_for_first_sew_second_ratio (const vector_insn_info &info1,
+-				  const vector_insn_info &info2)
+-{
+-  return calculate_vlmul (info1.get_sew (), info2.get_ratio ());
+-}
+-
+-static vlmul_type
+-vlmul_for_greatest_sew_second_ratio (const vector_insn_info &info1,
+-				     const vector_insn_info &info2)
+-{
+-  return calculate_vlmul (MAX (info1.get_sew (), info2.get_sew ()),
+-			  info2.get_ratio ());
+-}
+-
+-static unsigned
+-ratio_for_second_sew_first_vlmul (const vector_insn_info &info1,
+-				  const vector_insn_info &info2)
+-{
+-  return calculate_ratio (info2.get_sew (), info1.get_vlmul ());
+-}
+-
+-static CONSTEXPR const demands_fuse_rule fuse_rules[] = {
+-#define DEF_SEW_LMUL_FUSE_RULE(DEMAND_SEW1, DEMAND_LMUL1, DEMAND_RATIO1,       \
+-			       DEMAND_GE_SEW1, DEMAND_SEW2, DEMAND_LMUL2,      \
+-			       DEMAND_RATIO2, DEMAND_GE_SEW2, NEW_DEMAND_SEW,  \
+-			       NEW_DEMAND_LMUL, NEW_DEMAND_RATIO,              \
+-			       NEW_DEMAND_GE_SEW, NEW_SEW, NEW_VLMUL,          \
+-			       NEW_RATIO)                                      \
+-  {{{DEMAND_ANY, DEMAND_SEW1, DEMAND_LMUL1, DEMAND_RATIO1, DEMAND_ANY,         \
+-     DEMAND_GE_SEW1, DEMAND_ANY, DEMAND_ANY},                                  \
+-    {DEMAND_ANY, DEMAND_SEW2, DEMAND_LMUL2, DEMAND_RATIO2, DEMAND_ANY,         \
+-     DEMAND_GE_SEW2, DEMAND_ANY, DEMAND_ANY}},                                 \
+-   NEW_DEMAND_SEW,                                                             \
+-   NEW_DEMAND_LMUL,                                                            \
+-   NEW_DEMAND_RATIO,                                                           \
+-   NEW_DEMAND_GE_SEW,                                                          \
+-   NEW_SEW,                                                                    \
+-   NEW_VLMUL,                                                                  \
+-   NEW_RATIO},
+-#include "riscv-vsetvl.def"
+-};
