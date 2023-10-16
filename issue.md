@@ -1590,4 +1590,3 @@ index 4b06d93e7f9..f636b8e68e3 100644
 -			      SEW2, LMUL2, RATIO2, NONZERO_AVL2, GE_SEW2,      \
 -			      TAIL_POLICTY2, MASK_POLICY2, COND)               \
 -  {{{AVL1, SEW1, LMUL1, RATIO1, NONZERO_AVL1, GE_SEW1, TAIL_POLICTY1,          \
--     MASK_POLICY1},                                                            \
