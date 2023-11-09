@@ -12,23 +12,26 @@ jobs:
     steps:
       - name: sleep
         run: |
-          sleep $((RANDOM % 60))
+          sleep $((RANDOM % 300))
 
   delay-2:
+    needs: [delay-1]
     runs-on: ubuntu-latest
     steps:
       - name: sleep
         run: |
-          sleep $((RANDOM % 60))
+          sleep $((RANDOM % 300))
 
   delay-3:
+    needs: [delay-2]
     runs-on: ubuntu-latest
     steps:
       - name: sleep
         run: |
-          sleep $((RANDOM % 60))
+          sleep $((RANDOM % 300))
 
   long-running:
+    needs: [delay-3]
     runs-on: ubuntu-latest
     steps:
       - name: sleep
