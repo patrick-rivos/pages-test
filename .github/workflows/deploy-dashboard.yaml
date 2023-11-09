@@ -7,11 +7,30 @@ on:
   workflow_dispatch:
 
 jobs:
-  deploy:
-    permissions:
-      issues: write
+  delay-1:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: sleep
         run: |
-          git --version
+          sleep $((RANDOM % 60))
+
+  delay-2:
+    runs-on: ubuntu-latest
+    steps:
+      - name: sleep
+        run: |
+          sleep $((RANDOM % 60))
+
+  delay-3:
+    runs-on: ubuntu-latest
+    steps:
+      - name: sleep
+        run: |
+          sleep $((RANDOM % 60))
+
+  long-running:
+    runs-on: ubuntu-latest
+    steps:
+      - name: sleep
+        run: |
+          sleep 120000
